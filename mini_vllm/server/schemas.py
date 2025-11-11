@@ -1,0 +1,2 @@
+# Pydantic req/resp shapes
+
