@@ -7,7 +7,6 @@ __pycache__/
 .coverage
 .git/
 .gitignore
-README.md
 docs/
 tests/
 bench/
