@@ -1,23 +1,17 @@
 FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
-# Install Python 3.12 and system dependencies
+# Install Python 3.10 and system dependencies (Python 3.10 comes with Ubuntu 22.04)
 RUN apt-get update && apt-get install -y \
-    software-properties-common \
+    python3 \
+    python3-dev \
+    python3-pip \
+    python3-venv \
     curl \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y \
-    python3.12 \
-    python3.12-dev \
-    python3.12-distutils \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pip for Python 3.12
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
-
-# Set Python 3.12 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip setuptools wheel
 
 # Set working directory
 WORKDIR /app
@@ -39,5 +33,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/healthz || exit 1
 
 # Run the server (default to tinyllama, can be overridden)
-CMD ["python", "-m", "mini_vllm.cli", "serve", "--model", "tinyllama"]
+CMD ["python3", "-m", "mini_vllm.cli", "serve", "--model", "tinyllama"]
 
