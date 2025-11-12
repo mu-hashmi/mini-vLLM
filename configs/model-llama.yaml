@@ -1,0 +1,13 @@
+model:
+  name: "meta-llama/Llama-3.2-1B-Instruct"
+  checkpoint_path: null  # Use HuggingFace model name if null
+  dtype: "float16"
+  max_seq_len: 2048
+  block_size: 16  # Tokens per block (for future KV cache)
+  # Quantization settings (optional)
+  quantization:
+    enabled: false
+    bits: 4  # 4 or 8 bit quantization (requires bitsandbytes)
+    # For 4-bit: "nf4" or "fp4"
+    # For 8-bit: "int8"
+

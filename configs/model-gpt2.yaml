@@ -1,3 +1,6 @@
-# Model configuration
-# ckpt path, dtype, max_seq, block_size
-
+model:
+  name: "gpt2"
+  checkpoint_path: null  # Use HuggingFace model name if null
+  dtype: "float32"
+  max_seq_len: 1024
+  block_size: 16  # Tokens per block (for future KV cache)

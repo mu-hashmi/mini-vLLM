@@ -1,3 +1,7 @@
-# Server configuration
-# ports, auth, limits, logging
-
+server:
+  host: "0.0.0.0"
+  port: 8000
+  
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
