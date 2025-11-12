@@ -18,6 +18,7 @@ WORKDIR /app
 
 # Copy project files
 COPY pyproject.toml ./
+COPY README.md ./
 COPY mini_vllm/ ./mini_vllm/
 COPY configs/ ./configs/
 COPY main.py ./
