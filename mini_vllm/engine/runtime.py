@@ -1,6 +1,7 @@
 """Single-request inference runtime (prefill + decode loop)."""
 
-from typing import List
+import time
+from typing import Iterator, List, Tuple
 
 import torch
 from loguru import logger
@@ -276,6 +277,190 @@ class InferenceRuntime:
             f"[generate] Generation complete: Generated {len(generated_tokens)} tokens"
         )
         return generated_text, generated_tokens
+
+    def generate_stream(
+        self,
+        prompt: str,
+        max_new_tokens: int = 100,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        stop_sequences: List[str] | None = None,
+    ) -> Iterator[Tuple[str, str, float]]:
+        """Generate text from prompt with streaming (yields tokens as they're generated).
+
+        Args:
+            prompt: Input prompt text
+            max_new_tokens: Maximum number of tokens to generate
+            temperature: Sampling temperature
+            top_k: Top-k sampling (None = disabled)
+            top_p: Nucleus sampling (None = disabled)
+            stop_sequences: Stop sequences (None = disabled)
+
+        Yields:
+            Tuple of (token, accumulated_text, timestamp) for each generated token
+        """
+        stream_start_time = time.time()
+        logger.debug(
+            f"[RUNTIME] generate_stream() called: prompt_len={len(prompt)}, max_new_tokens={max_new_tokens}, device={self.device}"
+        )
+
+        first_token_time = None
+
+        # Apply chat template if available
+        if (
+            hasattr(self.tokenizer, "apply_chat_template")
+            and self.tokenizer.chat_template is not None
+        ):
+            logger.debug("[RUNTIME] Applying chat template")
+            messages = [{"role": "user", "content": prompt}]
+            formatted_prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        else:
+            formatted_prompt = prompt
+
+        # Tokenize input
+        logger.debug("[RUNTIME] Tokenizing input...")
+        tokenize_start = time.time()
+        inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
+        input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs.get("attention_mask", None)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self.device)
+        logger.debug(
+            f"[RUNTIME] Tokenization complete in {(time.time() - tokenize_start) * 1000:.2f}ms, input_ids shape: {input_ids.shape}"
+        )
+
+        # Prefill: forward pass on input tokens
+        logger.debug("[RUNTIME] Starting prefill forward pass...")
+        prefill_start = time.time()
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=self.use_cache,
+            )
+
+            if self.use_cache:
+                past_key_values = outputs.past_key_values
+            else:
+                past_key_values = None
+
+            next_token_logits = outputs.logits[:, -1, :]
+
+        prefill_time = time.time() - prefill_start
+        logger.debug(
+            f"[RUNTIME] Prefill complete in {prefill_time * 1000:.2f}ms, logits shape: {next_token_logits.shape}"
+        )
+
+        # Initialize generation
+        generated_tokens = []
+        generated_text = ""
+        current_ids = input_ids.clone()
+
+        # Decode loop: generate one token at a time
+        logger.debug(f"[RUNTIME] Starting decode loop (max {max_new_tokens} steps)...")
+        for step in range(max_new_tokens):
+            step_start = time.time()
+            logger.debug(f"[RUNTIME] Decode step {step + 1}/{max_new_tokens}")
+
+            # Sample next token
+            sample_start = time.time()
+            next_token_id = self._sample_token(
+                next_token_logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
+            sample_time = time.time() - sample_start
+            logger.debug(
+                f"[RUNTIME] Sampled token_id={next_token_id} in {sample_time * 1000:.2f}ms"
+            )
+
+            # Decode token
+            decode_start = time.time()
+            token = self.tokenizer.decode([next_token_id], skip_special_tokens=False)
+            decode_time = time.time() - decode_start
+            logger.debug(
+                f"[RUNTIME] Decoded token: {repr(token[:50])} in {decode_time * 1000:.2f}ms"
+            )
+
+            generated_tokens.append(token)
+            generated_text += token
+
+            # Record first token time
+            current_time = time.time()
+            if first_token_time is None:
+                first_token_time = current_time
+                logger.debug(
+                    f"[RUNTIME] First token ready! Time from start: {(current_time - stream_start_time) * 1000:.2f}ms"
+                )
+
+            # Yield token with timestamp
+            before_yield = time.time()
+            logger.debug(
+                f"[RUNTIME] About to yield token {step + 1}: {repr(token[:30])}"
+            )
+            yield token, generated_text, current_time
+            after_yield = time.time()
+            logger.debug(
+                f"[RUNTIME] Yielded token {step + 1}, yield took {(after_yield - before_yield) * 1000:.2f}ms, step_total={(after_yield - step_start) * 1000:.2f}ms"
+            )
+
+            # Check stop conditions
+            if self._check_stop(generated_text, stop_sequences):
+                logger.debug(
+                    f"[RUNTIME] Stopped at step {step + 1} due to stop sequence"
+                )
+                break
+
+            # Check for EOS
+            if next_token_id == self.tokenizer.eos_token_id:
+                logger.debug(f"[RUNTIME] Stopped at step {step + 1} due to EOS token")
+                break
+
+            # Prepare for next iteration
+            next_token_ids = torch.tensor([[next_token_id]], device=self.device)
+            current_ids = torch.cat([current_ids, next_token_ids], dim=1)
+
+            # Decode step: forward pass with past_key_values
+            forward_start = time.time()
+            with torch.no_grad():
+                if not self.use_cache:
+                    logger.debug("[RUNTIME] Running full forward pass (no cache)")
+                    outputs = self.model(
+                        input_ids=current_ids,
+                        attention_mask=None,
+                        use_cache=False,
+                    )
+                else:
+                    logger.debug(
+                        "[RUNTIME] Running incremental forward pass (with cache)"
+                    )
+                    outputs = self.model(
+                        input_ids=next_token_ids,
+                        past_key_values=past_key_values,
+                        use_cache=True,
+                    )
+
+                if self.use_cache:
+                    past_key_values = outputs.past_key_values
+                else:
+                    past_key_values = None
+
+                next_token_logits = outputs.logits[:, -1, :]
+
+            forward_time = time.time() - forward_start
+            logger.debug(
+                f"[RUNTIME] Forward pass complete in {forward_time * 1000:.2f}ms"
+            )
+
+        total_time = time.time() - stream_start_time
+        logger.debug(
+            f"[RUNTIME] Generation complete: Generated {len(generated_tokens)} tokens in {total_time:.2f}s "
+            f"({len(generated_tokens) / total_time:.2f} tokens/sec)"
+        )
 
     def _sample_token(
         self,

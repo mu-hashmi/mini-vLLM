@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.121.1",
+    "httpx>=0.28.1",
     "huggingface-hub>=0.36.0",
     "loguru>=0.7.3",
     "pydantic>=2.12.4",
